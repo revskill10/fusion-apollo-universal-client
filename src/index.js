@@ -11,6 +11,8 @@ import {FetchToken} from 'fusion-tokens';
 import {GraphQLSchemaToken, ApolloContextToken} from 'fusion-apollo';
 import {ApolloClient} from 'apollo-client';
 import {HttpLink} from 'apollo-link-http';
+import {WebSocketLink} from 'apollo-link-ws';
+import {SubscriptionClient} from 'subscriptions-transport-ws';
 import {ApolloLink, concat} from 'apollo-link';
 import {SchemaLink} from 'apollo-link-schema';
 
@@ -25,14 +27,21 @@ import * as Cookies from 'js-cookie';
 export const ApolloClientEndpointToken: Token<string> = createToken(
   'ApolloClientEndpointToken'
 );
+
+export const ApolloClientSubscriptionEndpointToken: Token<string> = createToken(
+  'ApolloClientSubscriptionEndpointToken'
+);
+
 export const ApolloClientCredentialsToken: Token<string> = createToken(
   'ApolloClientCredentialsToken'
 );
 export const ApolloClientAuthKeyToken = createToken('ApolloClientAuthKeyToken');
 
+
 const ApolloClientPlugin = createPlugin({
   deps: {
     endpoint: ApolloClientEndpointToken,
+    subscriptionEndpoint: ApolloClientSubscriptionEndpointToken,
     fetch: FetchToken,
     includeCredentials: ApolloClientCredentialsToken.optional,
     authKey: ApolloClientAuthKeyToken.optional,
@@ -41,6 +50,7 @@ const ApolloClientPlugin = createPlugin({
   },
   provides({
     endpoint,
+    subscriptionEndpoint,
     fetch,
     authKey = 'token',
     includeCredentials = 'same-origin',
@@ -56,7 +66,7 @@ const ApolloClientPlugin = createPlugin({
         return ctx && ctx.cookies.get(authKey);
       };
 
-      const connectionLink =
+      let connectionLink =
         schema && __NODE__
           ? new SchemaLink({
               schema,
@@ -70,7 +80,7 @@ const ApolloClientPlugin = createPlugin({
               credentials: includeCredentials,
               fetch,
             });
-
+                        
       const token = __BROWSER__ ? getBrowserProps() : getServerProps();
       const authMiddleware = new ApolloLink((operation, forward) => {
         if (token) {
@@ -83,6 +93,28 @@ const ApolloClientPlugin = createPlugin({
 
         return forward(operation);
       });
+
+      if (__BROWSER__) {        
+        const subscriptionClient = new SubscriptionClient(subscriptionEndpoint, {
+          reconnect: true,
+          connectionParams: () => ({
+            authorization: `Bearer ${token}`,
+          })
+        });
+        const wsLink = new WebSocketLink(subscriptionClient);
+
+        const hasSubscriptionOperation = ({ query: { definitions } }) =>
+          definitions.some(
+            ({ kind, operation }) =>
+              kind === 'OperationDefinition' && operation === 'subscription',
+          )
+        
+        connectionLink = ApolloLink.split(
+          hasSubscriptionOperation,
+          wsLink,
+          connectionLink,
+        )
+      }
 
       const client = new ApolloClient({
         ssrMode: true,
